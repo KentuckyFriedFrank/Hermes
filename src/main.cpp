@@ -4,6 +4,7 @@
  *
  */
 
+#include <Arduino.h>
 /* Run parameters: */
 #define MAX_BRIGHTNESS 0.65 // Max LED brightness.
 #define MIN_BRIGHTNESS 0.3
@@ -11,17 +12,17 @@
 
 /* Neopixel parameters: */
 #define LED_COUNT 19
-#define DATA_PIN 6
+#define DATA_PIN 15
 
 /* Animation parameters: */
 // ~15 ms minimum crawl speed for normal mode,
 // ~2 ms minimum for superfast hack mode.
-#define CRAWL_SPEED_MS 35
+#define CRAWL_SPEED_MS 2
 // General sensitivity of the animation.
 // Raising this raises the vector magnitude needed to reach max (purple),
 // and thus lowers sensitivity.
 // Eg: 800 = more sensitive, 1600 = less sensitive
-#define HERMES_SENSITIVITY 1600.0
+#define HERMES_SENSITIVITY 200.0
 // Emulate two strips by starting the crawl in the
 // middle of the strip and crawling both ways.
 #define ENABLE_SPLIT_STRIP 1
@@ -38,7 +39,7 @@
 #define PRINT_LOOP_TIME 0
 
 /* Advanced: */
-#define ONBOARD_LED_PIN 7 // Pin D7 has an LED connected on FLORA.
+#define ONBOARD_LED_PIN 2 // Pin D7 has an LED connected on FLORA.
 
 ///////////////////////////////////////////////////////////////////
 
@@ -47,14 +48,53 @@
 
 // Accel imports.
 #include <Wire.h>
-#include <Adafruit_LSM303_Old.h>
-//#include <Adafruit_LSM303.h>
+#include <Adafruit_Sensor.h>
+// #include <Adafruit_LSM303_Old.h>
+// #include <Adafruit_LSM303.h>
+#include <Adafruit_MPU6050.h>
+
+// #include <LSM303.h>
 
 // Our custom data type.
 #include "AccelReading.h"
 
+Adafruit_MPU6050 accel;
+// accel.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+void checkSuperfastHack();
+void colorSetup();
+void colorSetup();         
+void accelSetup();        
+void loopDebug();     
+void accelPoll();      
+void updateLED();      
+void pauseOnKeystroke();                  
+void showColorOff();             
+int bufferSize();                          
+void calibrate();      
+void showCalibration();            
+bool fillBuffer();
+void printBuffer();
+void printDelta();
+void printMagnitude();
+double getMagnitude(AccelReading reading);
+void resetBreathe();
+void colorOff();
+void stripShow();
+AccelReading getPreviousReading();
+AccelReading getCurrentReading();
+bool equalReadings(AccelReading a, AccelReading b);
+uint32_t pixelColorForScale(double scale);
+bool sleep();
+void breathe();
+int constrainBetween(int value, int lower, int higher);
+uint32_t color(int color, float brightness);
+void crawlColor(uint32_t color);
+                    
+
 void setup() {
-    Serial.begin(9600);
+  Serial.begin(9600);
+  Serial.println("Starting hermes");
   if (WAIT_FOR_KEYBOARD) {
     // Wait for serial to initalize.
     while (!Serial) { }
@@ -73,6 +113,7 @@ void setup() {
   colorSetup();
   
   accelSetup();
+ 
 }
 
 void loop() {
@@ -133,7 +174,7 @@ void pauseOnKeystroke() {
 // accel //
 ///////////
 
-Adafruit_LSM303_Old lsm; // Bridge to accelerometer hardware.
+// Adafruit_LSM303_Old lsm; // Bridge to accelerometer hardware.
 //Adafruit_LSM303 lsm; // Bridge to accelerometer hardware.
 AccelReading accelBuffer[10]; // Buffer for storing the last 10 readings.
 int bufferPosition; // Current read position of the buffer.
@@ -151,7 +192,7 @@ void accelSetup() {
     Serial.println("BEGIN");
   }
   
-  lsm.begin();
+  accel.begin();
   
   bufferPosition = 0;
 
@@ -256,12 +297,13 @@ double getVector(AccelReading reading) {
 // buffer position, fills the buffer with accelerometer data, and returns true.
 bool fillBuffer() {
   // Read from the hardware.
-  lsm.read();
+  sensors_event_t a, g, temp;
+  accel.getEvent(&a, &g, &temp);
   
   AccelReading newReading;
-  newReading.x = lsm.accelData.x;
-  newReading.y = lsm.accelData.y;
-  newReading.z = lsm.accelData.z;
+  newReading.x = a.acceleration.x;
+  newReading.y = a.acceleration.y;
+  newReading.z = a.acceleration.z;
   
   // The accelerometer hasn't processed a new reading since the last buffer.
   // Do nothing and return false.
@@ -307,9 +349,9 @@ void printDelta() {
   int deltaY = abs(abs(currentReading.y) - abs(previousReading.y));
   int deltaZ = abs(abs(currentReading.z) - abs(previousReading.z));
 
-  Serial.print(deltaX); Serial.print ("\t");
-  Serial.print(deltaY); Serial.print ("\t");
-  Serial.print(deltaZ); Serial.print ("\t");
+  Serial.print("deltaX: "); Serial.print(deltaX); Serial.print("\t");
+  Serial.print("deltaY: "); Serial.print(deltaY); Serial.print("\t");
+  Serial.print("deltaZ: "); Serial.print(deltaZ); Serial.print("\t");
   Serial.print(getDelta()); Serial.println();
 }
 
@@ -326,14 +368,14 @@ double getMagnitude(AccelReading reading) {
 }
 
 void printMagnitude() {
-  Serial.println(getMagnitude(getCurrentReading()));
+  Serial.print("Magnitude: "); Serial.println(getMagnitude(getCurrentReading()));
 }
 
 // Prints the latest buffer reading to the screen.
 void printBuffer() {
-  Serial.print(accelBuffer[bufferPosition].x); Serial.print ("\t");
-  Serial.print(accelBuffer[bufferPosition].y); Serial.print ("\t");
-  Serial.print(accelBuffer[bufferPosition].z); Serial.println();
+  Serial.print("accelBuffer.x: "); Serial.print(accelBuffer[bufferPosition].x); Serial.print("\t");
+  Serial.print("accelBuffer.y: "); Serial.print(accelBuffer[bufferPosition].y); Serial.print("\t");
+  Serial.print("accelBuffer.z: "); Serial.print(accelBuffer[bufferPosition].z); Serial.println();
 }
 
 ///////////////////////////////////////////////////////////////////
@@ -373,7 +415,7 @@ uint32_t lastColor;
 unsigned long lastCrawl;
 uint32_t lightArray[LED_COUNT];
 
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(LED_COUNT, DATA_PIN, NEO_RGB + NEO_KHZ800);
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(LED_COUNT, DATA_PIN, NEO_GRB + NEO_KHZ800);
 
 void colorSetup() {
   lastColor = 0;
@@ -522,7 +564,7 @@ void showColorProgression() {
 }
 
 // Color 1 from 384; brightness 0.0 to 1.0.
-uint32_t color(uint16_t color, float brightness)  {
+uint32_t color(int color, float brightness)  {
   // Our logic is 0 - 383
   color = min(max(color, 0), 383);
 
@@ -544,6 +586,11 @@ uint32_t color(uint16_t color, float brightness)  {
       g = 0;
       b = 127 - color % 128;
       break;
+    default:
+      r = 0;
+      g = 0;
+      b = 0;
+
   }
   r *= brightness;
   g *= brightness;
