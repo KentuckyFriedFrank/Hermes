@@ -6,23 +6,25 @@
 
 #include <Arduino.h>
 /* Run parameters: */
-#define MAX_BRIGHTNESS 0.65 // Max LED brightness.
-#define MIN_BRIGHTNESS 0.3
+#define MAX_BRIGHTNESS 32 // Max LED brightness.
+#define MIN_BRIGHTNESS 16
 #define WAIT_FOR_KEYBOARD 0 // Use keyboard to pause/resume program.
 
 /* Neopixel parameters: */
 #define LED_COUNT 19
-#define DATA_PIN 15
+// #define DATA_PIN 3
+#define LED_TYPE WS2811
+#define COLOR_ORDER GRB
 
 /* Animation parameters: */
 // ~15 ms minimum crawl speed for normal mode,
 // ~2 ms minimum for superfast hack mode.
-#define CRAWL_SPEED_MS 2
+#define CRAWL_SPEED_MS 8
 // General sensitivity of the animation.
 // Raising this raises the vector magnitude needed to reach max (purple),
 // and thus lowers sensitivity.
 // Eg: 800 = more sensitive, 1600 = less sensitive
-#define HERMES_SENSITIVITY 200.0
+#define HERMES_SENSITIVITY 1.0
 // Emulate two strips by starting the crawl in the
 // middle of the strip and crawling both ways.
 #define ENABLE_SPLIT_STRIP 1
@@ -43,8 +45,9 @@
 
 ///////////////////////////////////////////////////////////////////
 
-// LED imports.
-#include <Adafruit_NeoPixel.h>
+// LED imports.'s
+// #include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
 
 // Accel imports.
 #include <Wire.h>
@@ -61,15 +64,14 @@
 Adafruit_MPU6050 accel;
 // accel.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
-void checkSuperfastHack();
-void colorSetup();
-void colorSetup();         
+void colorSetup();        
 void accelSetup();        
 void loopDebug();     
 void accelPoll();      
 void updateLED();      
 void pauseOnKeystroke();                  
-void showColorOff();             
+void showColorOff();
+void showColor(float scale);         
 int bufferSize();                          
 void calibrate();      
 void showCalibration();            
@@ -108,8 +110,6 @@ void setup() {
     Serial.read();
   }
   
-  checkSuperfastHack();
-  
   colorSetup();
   
   accelSetup();
@@ -134,18 +134,6 @@ void loopDebug() {
     Serial.println(now - before);
     before = millis();
   }
-}
-
-void checkSuperfastHack() {
-  #if SUPERFAST_LED_HACK
-    #ifdef _COMPILE_TIME_LEDS_
-      Serial.println("Using superfast LED hack.");
-    #elif
-      // Wait for serial to initalize.
-      while (!Serial) { }
-      Serial.println("WARNING: You need to install the LPD8806Fast library.");
-    #endif
-  #endif
 }
 
 void pauseOnKeystroke() {
@@ -191,7 +179,8 @@ void accelSetup() {
   if (WAIT_FOR_KEYBOARD) {
     Serial.println("BEGIN");
   }
-  
+  accel.setAccelerometerRange(MPU6050_RANGE_2_G);
+  accel.setFilterBandwidth(MPU6050_BAND_21_HZ);
   accel.begin();
   
   bufferPosition = 0;
@@ -279,7 +268,7 @@ void accelPoll() {
   // printBuffer();
   // printDelta();
   // printMagnitude();
-  // Serial.println();
+  Serial.println();
 }
 
 // Gets the vector for the given reading.
@@ -410,19 +399,21 @@ bool equalReadings(AccelReading a, AccelReading b) {
 // color //
 ///////////
 
-int COLOR_RANGE = 384;
+int COLOR_RANGE = 255;
 uint32_t lastColor;
 unsigned long lastCrawl;
 uint32_t lightArray[LED_COUNT];
 
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(LED_COUNT, DATA_PIN, NEO_GRB + NEO_KHZ800);
+// Adafruit_NeoPixel strip = Adafruit_NeoPixel(LED_COUNT, DATA_PIN, NEO_GRB + NEO_KHZ800);
+CRGB strip[LED_COUNT];
 
 void colorSetup() {
+  FastLED.addLeds<LED_TYPE, 3, COLOR_ORDER>(strip, LED_COUNT);
+  FastLED.setBrightness(MIN_BRIGHTNESS);
   lastColor = 0;
   lastCrawl = 0;
   
   // Turn the strip on.
-  strip.begin();
   stripShow();
   
   // Initialize the LED buffer.
@@ -442,7 +433,7 @@ void updateLED() {
   uint32_t pixelColor = pixelColorForScale(scale);
   
   // Change LED strip color.
-  //showColor(scale);
+  showColor(scale);
   
   if (sleep()) {
     breathe();
@@ -487,13 +478,13 @@ void crawlColor(uint32_t color) {
     // Crawl 'low' side (center down)
     uint32_t *pixelColor = lightArray;
     for (int led = centerLED - 1; led >= centerLED - 1 - LEDsPerSide; led--) {
-      strip.setPixelColor(constrainBetween(led, 0, LED_COUNT - 1), *pixelColor++);
+      strip[constrainBetween(led, 0, LED_COUNT - 1)].setHue(*pixelColor++);
     }
   
     // Crawl 'high' side (center up)
     pixelColor = lightArray;
     for (int led = centerLED; led < centerLED + LEDsPerSide; led++) {
-      strip.setPixelColor(constrainBetween(led, 0, LED_COUNT - 1), *pixelColor++);
+      strip[constrainBetween(led, 0, LED_COUNT - 1)].setHue(*pixelColor++);
     }
   
     stripShow();
@@ -502,7 +493,7 @@ void crawlColor(uint32_t color) {
   }
   
   for (int i = 0; i < LED_COUNT; i++) {
-    strip.setPixelColor(i, lightArray[i]);
+    strip[i] = lightArray[i];
   }
   stripShow();
 }
@@ -530,72 +521,28 @@ void showColor(float scale) {
 
   // Serial.print("Show "); Serial.print(scale); Serial.println(c);
   for (int i = 0; i < LED_COUNT; i++) {
-   strip.setPixelColor(i, pixelColor);
+   strip[i].setHue(pixelColor);
   }
   stripShow();
 }
 
-// Returns a pixel color for use by strip.setPixelColor().
+// Returns a pixel color for use by strip[)] =
 // Automatically adjusts brightness.
 // Takes a scale, from 0.0 to 1.0, indicating progression
 // through the color rainbow.
 uint32_t pixelColorForScale(double scale) {
-  float brightness = MAX_BRIGHTNESS * (scale + MIN_BRIGHTNESS);
   int c = COLOR_RANGE * scale; // Intentionally round to an int.
 
-  return color(c, brightness);
-}
-
-// Shows the color progression.
-void showColorProgression() {
-  for (int j = 0; j < 384; j++) {
-    for (int i = 0; i < strip.numPixels(); i++) {
-      strip.setPixelColor(i, color(j, 0.5));
-    }
-    stripShow();
-    delay(1);
-  }
-  
-  for (int i = 0; i < strip.numPixels(); i++) {
-    strip.setPixelColor(i, 0);
-  }
-  stripShow();
-  delay(1);
+  // return color(c, brightness);
+  Serial.print("c: "); Serial.print(c); Serial.print("  "); Serial.print("scale: "); Serial.println(scale); 
+  return c;
 }
 
 // Color 1 from 384; brightness 0.0 to 1.0.
 uint32_t color(int color, float brightness)  {
   // Our logic is 0 - 383
-  color = min(max(color, 0), 383);
-
-  byte r, g, b;
-  int range = color / 128;
-  switch (range) {
-    case 0: // Red to Yellow (1 to 128)
-      r = 127 - color % 128;
-      g = color % 128;
-      b = 0;
-      break;
-    case 1: // Yellow to Teal (129 to 256)
-      r = 0;
-      g = 127 - color % 128;
-      b = color % 128;
-      break;
-    case 2: // Teal to Purple (257 to 384)
-      r = color % 128;
-      g = 0;
-      b = 127 - color % 128;
-      break;
-    default:
-      r = 0;
-      g = 0;
-      b = 0;
-
-  }
-  r *= brightness;
-  g *= brightness;
-  b *= brightness;
-  return strip.Color(r, g, b);
+  // color = min(max(color, 0), 255);
+  return color;
 }
 
 void showColorOff() {
@@ -604,8 +551,8 @@ void showColorOff() {
 }
 
 void colorOff() {
-  for (int i = 0; i < strip.numPixels(); i++) {
-    strip.setPixelColor(i, 0);
+  for (int i = 0; i < LED_COUNT; i++) {
+    strip[i] = 0;
   }
 }
 
@@ -614,33 +561,19 @@ void showCalibration() {
   colorOff();
 
   int mid = LED_COUNT / 2;
-  float brightness = 0.3;
   
   // Red
-  strip.setPixelColor(mid - 1, strip.Color(127 * brightness, 0, 0));
+  strip[mid - 1] = CRGB::Red;
   // Green
-  strip.setPixelColor(mid, strip.Color(0, 127 * brightness, 0));
+  strip[mid] = CRGB::Green;
   // Blue
-  strip.setPixelColor(mid + 1, strip.Color(0, 0, 127 * brightness));
+  strip[mid + 1] = CRGB::Blue;
   
   stripShow();
 }
 
 void stripShow() {
-  #if SUPERFAST_LED_HACK
-    #ifdef _COMPILE_TIME_LEDS_
-      // These settings are for Leonardo (ATmega32u4) with
-      // LED pins data=6, clock=12.
-      // See CompileTimeLEDs.h for more info.
-      strip.showCompileTime<6, 7>(PORTD, PORTD);
-    #elif
-      // Can't actually use superfast hack, it isn't installed properly.
-      strip.show();
-    #endif
-    return;
-  #endif
-
-  strip.show();
+  FastLED.show();
 }
 
 ///////////////////////////////////////////////////////////////////
@@ -711,11 +644,11 @@ void breathe() {
   if ((now - lastBreath) > period) {
     lastBreath = now;
 
-    for (int i = 0; i < strip.numPixels(); i++) {
+    for (int i = 0; i < LED_COUNT; i++) {
       uint8_t color = (SLEEP_BRIGHTNESS * 127 * KEYFRAMES[keyframePointer]) / 256;
-      strip.setPixelColor(i, color, 0, 0);
+      strip[i].setHue(color);
     }
-    strip.show();   
+    FastLED.show();   
 
     // Increment the keyframe pointer.
     if (++keyframePointer > numKeyframes) {
